@@ -1,0 +1,427 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="initial-scale=1, maximum-scale=1,user-scalable=no">
+    <title>DevSummit 2015 - Building Real Time WebApps</title>
+    <link rel="stylesheet" href="http://js.arcgis.com/3.12/dijit/themes/tundra/tundra.css">
+    <link rel="stylesheet" href="http://js.arcgis.com/3.12/esri/css/esri.css">
+    <style type="text/css">
+        html, body {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            background-color: #fff;
+            overflow:hidden;
+            font-family: sans-serif;
+        }
+		#header{
+			background-color: #434770;
+			color: #ffffff;
+			padding-left: 20px;
+			padding-top: 10px;
+			width: 100%;
+            height: 25px;
+		}
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+		#controls_bottom {
+			position: absolute;
+			bottom: 0px;
+			width: 100%;
+            height: 10%;
+			background: rgba(255, 255, 255, 0.8);
+			padding-left: 10px;
+			padding-top: 10px;
+			white-space: nowrap;
+		}
+		#controls_right{
+			position: absolute;
+			right: 1%;
+			top: 7%;
+		}
+		.button1{
+			border-radius:5px;
+			border:1px solid #000000;
+			//box-shadow: 1px 1px 0px 0px #888;
+			background-color: #fff;
+		}
+		.button1:hover {
+			background-color:rgba(255,204,0,0.8);
+		}
+    </style>
+    <script src="http://js.arcgis.com/3.13/"></script>
+  </head>
+  <body class="tundra">
+	<div id="header"><b><span style="padding-top: 10px">Esri Developer Summit 2015 - ArcGIS GeoEvent Extension for Server: Building Real-Time WebApps</span></div>
+    <div id="map"></div>
+	<div id="controls_bottom">
+		<span>StreamService:</span>
+		<input type="text" id="txtWsUrl" value="http://localhost:6080/arcgis/rest/services/Flights/StreamServer" style="width: 400px; margin-bottom: 5px" />
+		<input type="text" id="txtWhereClause" value="" style="width: 200px; margin-left: 70px" />
+		<input type="button" class="button1" id="cmdApplyWhere" value="Set Where" />
+		<input type="button" class="button1" id="cmdSetSpatialFilt" value="Draw Extent" />
+		<input type="button" class="button1" id="cmdClearSpatialFilt" value="Clear Extent" style="visibility: hidden;"/>
+		<br>
+		<input type="button" class="button1" id="cmdNewStream" value="Add StreamLayer" />
+		<input type="button" class="button1" id="cmdClearGraphics" value="Clear Graphics" style="visibility: hidden;" />
+		<input type="button" class="button1" id="cmdFollow" value="Follow" style="visibility: hidden;" />
+	</div>
+	<div id="controls_right">
+		<input type="button" class="button1" id="cmdChangeSym" value="Change Symbol" style="margin-bottom: 5px; width: 130px"><br>
+		<input type="button" class="button1" id="cmdChangeRen" value="Change Renderer" style="margin-bottom: 5px; width: 130px"><br>
+		<input type="button" class="button1" id="cmdShowAirports" value="Show Airports" style="margin-bottom: 5px; width: 130px">
+	</div>
+  </body>
+
+  <script>    
+    require(["esri/map",
+		"esri/graphic",
+        "esri/TimeExtent",
+		"esri/toolbars/draw",
+        "esri/layers/StreamLayer",
+        "esri/InfoTemplate",
+        "esri/symbols/SimpleMarkerSymbol",
+		"esri/symbols/PictureMarkerSymbol",
+        "esri/symbols/SimpleLineSymbol",
+		"esri/symbols/SimpleFillSymbol",
+        "esri/renderers/SimpleRenderer",
+		"esri/renderers/TemporalRenderer",
+		"esri/renderers/TimeClassBreaksAger",
+        "dojo/_base/Color",
+        "dojo/dom",
+        "dojo/on",
+        "dojo/domReady!"], function (Map, Graphic, TimeExtent, Draw, StreamLayer, InfoTemplate, SimpleMarkerSymbol, PictureMarkerSymbol, SimpleLineSymbol, SimpleFillSymbol, SimpleRenderer, TemporalRenderer, TimeClassBreaksAger, Color, dom, on) {
+		dojo.require("dojox.gfx.move");
+        var map, 
+			id = 0, 
+			graphicsColl, 
+			streamLayer,
+			airportLayer,
+			drawTools,
+			initialExtent,
+			following = false,
+			followTrack,
+			followLoc,
+			stopMe = false;
+		
+	// ##### Map related Functions #####
+		//Create Map
+          map = new Map("map",{
+            basemap: "gray",
+            center: [-96, 36.428],
+            zoom: 4
+          });
+		
+		//Event listeners for Map interaction
+		map.on("load", function(){
+			drawTools = new Draw(map);
+			drawTools.on("draw-end", setDrawFilter);
+			initialExtent = map.extent;
+			});
+		map.on("click", enableFollow);
+
+	// ##### UI related functions ####		
+		
+        // event listeners for button clicks
+        on(dom.byId("cmdNewStream"), "click", makeNewStreamLayer);
+        on(dom.byId("cmdClearGraphics"), "click", clearGraphics);
+		on(dojo.byId("cmdSetSpatialFilt"), "click", drawFilter);
+		on(dojo.byId("cmdClearSpatialFilt"), "click", clearDrawFilter);
+		on(dojo.byId("cmdFollow"), "click", startFollow);
+		on(dojo.byId("cmdApplyWhere"), "click", setWhere);
+		on(dojo.byId("cmdChangeSym"), "click", changeSym);
+		on(dojo.byId("cmdChangeRen"), "click", changeRen);
+		on(dojo.byId("cmdShowAirports"), "click", showAirports);
+
+	// ##### Updating attribute filter (Where clause) ####
+		//Set attribute filter
+		function setWhere(){
+			var filter = streamLayer.getDefinitionExpression();
+			if (!filter){
+				var expression = dojo.byId("txtWhereClause").value
+				streamLayer.setDefinitionExpression(expression);
+				dojo.byId("txtWhereClause").style.backgroundColor = "#00ff00";
+				dojo.byId("cmdApplyWhere").value="Remove Where";
+			}else{
+				streamLayer.setDefinitionExpression(null);
+				dojo.byId("txtWhereClause").style.backgroundColor = "#ffffff";
+				dojo.byId("cmdApplyWhere").value="Set Where";
+			}
+		};
+	
+	// ##### Follow ####
+		function enableFollow(evt){
+			if (evt.graphic && !following){
+				followTrack = evt.graphic.attributes.Name
+				followLoc = evt.graphic.geometry
+				dojo.byId("cmdFollow").style.visibility = "visible";
+			}else if(!following){
+				dojo.byId("cmdFollow").style.visibility = "hidden";
+			}
+		}
+	
+		function startFollow(){
+			if (!following){
+				following = true;
+				map.centerAndZoom(followLoc,6);
+				dojo.byId("cmdFollow").value="Stop Following";
+			}else{
+				following = false;
+				dojo.byId("cmdFollow").value="Follow";
+				map.setExtent(initialExtent);
+				setExtent(map.extent);
+			}
+		}
+		
+	// ##### Draw extent and set it as spatial filter ####	
+		//Activate drawing tools
+		function drawFilter(){
+			if (streamLayer){
+				drawTools.activate(Draw.EXTENT);
+			}else{
+				alert("Please connect to a StreamService first in order to apply a spatial filter");
+			};
+        }
+		//Apply the drawn Filter (called by on.draw-end handler (@ map.on(load)) after extent was drawn on the map)
+		function setDrawFilter(evt){
+			drawTools.deactivate();
+			if (map.graphics.graphics.length > 1){
+				graphic = map.graphics.graphics[1];
+				graphic.setGeometry(evt.geometry);
+            }
+            else{
+              graphic = new Graphic(evt.geometry,
+                new SimpleFillSymbol(SimpleFillSymbol.STYLE_NULL,
+                new SimpleLineSymbol(SimpleLineSymbol.STYLE_SOLID,
+                new Color( [5, 112, 176] ), 2),
+                new Color( [5, 112, 176, 0] )));
+				map.graphics.add(graphic);
+            }
+			setExtent(graphic.geometry);
+			stopMe = true;
+			dojo.byId("cmdClearSpatialFilt").style.visibility = "visible";
+		};
+		//Clear the drawn Filter
+		function clearDrawFilter(){
+			stopMe = false;
+			setExtent(null);
+			if (map.graphics.graphics.length > 1){
+				var graphic = map.graphics.graphics[1];
+				map.graphics.remove(graphic);
+			}
+			dojo.byId("cmdClearSpatialFilt").style.visibility = "hidden";
+        }
+		
+		//Set spatial filter
+		function setExtent(geom){
+			streamLayer.setGeometryDefinition(geom);
+		};
+		
+	// ##### StreamLayer related Functions #####
+		// Make new StreamLayer and add it to map.
+        function makeNewStreamLayer() {
+			if (streamLayer){
+				disconnectStreamLayer();
+				graphicsColl = {};
+			}else{
+				streamLayer = makeStreamLayer();
+				map.addLayer(streamLayer);
+			}
+        }
+		// Create the actual StreamLayer
+        function makeStreamLayer(){
+			var layer,
+			url = dojo.byId("txtWsUrl").value,
+            options = {
+				purgeOptions: { displayCount: 10000 },
+				maximumTrackPoints: 1,
+				//outFields: ["Name","Altitude","Destination"],
+				infoTemplate: new InfoTemplate("Attributes", "Name: ${Name}<br>Altitude: ${Altitude}<br>Origin: ${Origin}<br>Destination: ${Destination}")
+            };
+			layer = new StreamLayer(url, options);
+
+        //Subscribe to event handler of StreamLayer
+		  //on message, update the centre point of the map to a features location if that feature is being followed 
+			layer.on("message", function(evt){
+				if (following && followTrack == evt.attributes.Name){
+					map.centerAt(evt.geometry);
+				}
+			});
+			
+			//On connect, change UI
+			layer.on("Connect", function(){
+				dojo.byId("cmdNewStream").value="Remove StreamLayer";
+				dojo.byId("txtWsUrl").style.backgroundColor = "#00ff00";
+				dojo.byId("cmdClearGraphics").style.visibility = "visible";
+			});
+			
+			//On disconnect, change UI
+			layer.on("Disconnect", function(){
+				dojo.byId("cmdNewStream").value="Add StreamLayer";
+				dojo.byId("txtWsUrl").style.backgroundColor = "#ff0000";
+				dojo.byId("cmdClearGraphics").style.visibility = "hidden";
+			});
+			
+			//On load, apply Renderer
+			layer.on("load", function(){
+				console.log("Stream layer connected: ", layer);
+				var renderer = makeRenderer();
+				layer.setRenderer(renderer);
+			});
+			
+			//On filter change, 
+			layer.on("filter-change", function(evt){
+				console.log(evt);
+			});
+
+			
+			
+			return layer;
+        };
+    
+        // Disconnect StreamLayer from WebSocket and remove it from the map
+
+        function disconnectStreamLayer(){
+			if (streamLayer){
+				streamLayer.suspend();
+				streamLayer.clear();
+				streamLayer.disconnect();
+				console.log("Stream layer disconnected: ", streamLayer);
+				map.removeLayer(streamLayer);				
+				streamLayer = null;
+				var graphic;
+				if (map.graphics.graphics.length > 1){
+					graphic = map.graphics.graphics[1];
+					map.graphics.remove(graphic);
+				};
+			};	
+        };
+		
+        // Clear Graphics
+        function clearGraphics() {
+            var layers = map.getLayersVisibleAtScale(map.getScale());
+			for (i = 0; i < layers.length; i++) {
+				if (layers[i]._isStream == true){
+					console.log(layers[i]);
+					layers[i].clear();
+				};
+            }
+        }
+		
+	// ##### Renderer related Functions #####    
+	   // Change Symbol
+		function changeSym(){
+			if (streamLayer.renderer.latestObservationRenderer.symbol.url){
+				streamLayer.setRenderer(makeRenderer());
+			}else{
+				streamLayer.setRenderer(makeRenderer("planes"));
+			}
+		};
+	   // Change MaxTrackPoints      
+		function changeRen(){
+			if (streamLayer.maximumTrackPoints == 1){
+				streamLayer.setMaximumTrackPoints(4);
+			}else{
+				streamLayer.setMaximumTrackPoints(1);
+			}
+		}
+	   // Make renderer
+		function makeRenderer(type){
+			if (type == "airport"){
+				renderer = new SimpleRenderer(
+					new SimpleMarkerSymbol("circle", 8,
+					new SimpleLineSymbol("solid",
+					new Color( [0, 0, 0, 1] ), 1),
+					new Color( [0, 0, 0] )
+				));
+				renderer.setSizeInfo({
+					field: "DelayedFlights",
+					minSize: 5,
+					maxSize: 50,
+					minDataValue: 0,
+					maxDataValue: 100,
+					valueUnit: "unknown"
+				});
+				renderer.setColorInfo({
+					field: "Temperature",
+					minDataValue: -20,
+					maxDataValue: 80,
+					colors: [
+						new Color([80,40,250]), 
+						new Color([250,60,40])
+					]
+				});
+				return renderer;
+			}else{
+			//Observation Renderer	
+			var obsRenderer = new SimpleRenderer(
+				new SimpleMarkerSymbol("circle", 8,
+				new SimpleLineSymbol("solid",
+				new Color( [0, 0, 0, 0.7] ), 0.5),
+				new Color( [30, 170, 100] )
+			));
+			if (type == "planes"){
+			//Plane Symbol - Latest Observation Renderer
+				var latestObsRenderer = new SimpleRenderer(new PictureMarkerSymbol('./symbol/plane.png', 20, 20));
+				latestObsRenderer.setRotationInfo({field: "speed"});
+			}else{
+			//Latest Observation Renderer
+				var latestObsRenderer = new SimpleRenderer(
+					new SimpleMarkerSymbol("circle", 12,
+					new SimpleLineSymbol("solid",
+					new Color( [0, 0, 0, 1] ), 1),
+					new Color( [5, 115, 175] )
+				));
+			}
+		   //TrackLine Renderer
+			var trackLineRenderer = new SimpleRenderer(
+				new SimpleLineSymbol("solid",
+				new Color( [250, 190, 70, 1] ), 2
+			));
+			//Observation Ager
+			/* var infos = [
+				{ minAge: 5, maxAge: 10, size: 8},
+				{ minAge: 10, maxAge: 15, size: 6},
+				{ minAge: 15, maxAge: Infinity, size: 4}
+			];
+			var obsAger = new TimeClassBreaksAger(infos,TimeClassBreaksAger.UNIT_SECONDS); */
+			
+			var temporalRenderer = new TemporalRenderer(obsRenderer, latestObsRenderer, trackLineRenderer, null);
+			return temporalRenderer;
+			};
+        };
+		
+	// ##### Add Airport StreamLayer ##### 	
+		function showAirports(){
+			if (airportLayer){
+				map.removeLayer(airportLayer);
+				dojo.byId("cmdShowAirports").value="Show Airports";
+			}else{
+				airportLayer = airportStreamLayer()
+				map.addLayer(airportLayer);
+				dojo.byId("cmdShowAirports").value="Hide Airports";
+			}
+		};
+		function airportStreamLayer(){
+			var url = "http://localhost:6080/arcgis/rest/services/Airports/StreamServer",
+            options = {
+				maximumTrackPoints: 1,
+            };
+			airports = new StreamLayer(url,options);
+			airports.on("load", function(){
+				var renderer = makeRenderer("airport");
+				airports.setRenderer(renderer);
+				console.log("Stream layer connected: ", airports);
+			});
+			return airports;
+		};
+    });
+  </script>
+
+</html>
